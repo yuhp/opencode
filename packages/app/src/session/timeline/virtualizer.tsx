@@ -131,13 +131,19 @@ type Input = {
   setScrollToEnd?: (fn: (behavior?: ScrollBehavior) => void) => void
   /** Pages the timeline for keys pressed outside it, such as PageUp in the composer. */
   setPage?: (fn: (direction: 1 | -1) => void) => void
-  reveal?: TimelineRouteReveal
+  reveal?: TimelineToolReveal
 }
 
-/** A tool call the route asks this timeline to open on; `consume` marks its history entry attempted. */
-export type TimelineRouteReveal = {
+/**
+ * How this timeline opens on a tool call. `pending` is the one the route asks for, and `consume` marks its history
+ * entry attempted. `attempted` reports each reveal the route or a row asked for: older history is paged toward a
+ * call that was not among the loaded messages, and the reveal the timeline registers runs again as each page lands.
+ */
+export type TimelineToolReveal = {
   pending: () => { readonly entryKey: string; readonly target: string } | undefined
   consume: (entryKey: string) => void
+  attempted: (target: string, found: boolean) => void
+  register: (reveal: (target: string) => boolean) => void
 }
 
 type ViewProps = {
@@ -555,6 +561,15 @@ export function createTimelineVirtualizer(input: Input) {
     return true
   }
 
+  // A call older than the loaded messages is not in the list yet, so older history is paged toward it.
+  function revealOrSeekPart(target: string) {
+    const revealed = revealPart(target)
+
+    if (active()) input.reveal?.attempted(target, revealed)
+
+    return revealed
+  }
+
   // Puts the anchored row's top edge at its scroll margin, just below the headers that stick above it. Its own
   // growth extends downward, so only size changes at or above its row can move it; each of those calls this again.
   function pinAnchor() {
@@ -649,7 +664,7 @@ export function createTimelineVirtualizer(input: Input) {
       // A route can open this timeline on a tool call, e.g. a shell picked from inside a subagent, instead of its end.
       // It is attempted once per history entry: a call that is not in the list is not looked for again on reattach.
       const reveal = input.reveal?.pending()
-      const revealed = !!reveal && revealPart(reveal.target)
+      const revealed = !!reveal && revealOrSeekPart(reveal.target)
 
       if (reveal) input.reveal?.consume(reveal.entryKey)
 
@@ -658,6 +673,7 @@ export function createTimelineVirtualizer(input: Input) {
       reportOffset?.(root.scrollTop, false)
       dispatchCold(CHECK_REQUESTED)
     })
+    input.reveal?.register(revealPart)
     input.setRevealMessage?.((id, partID) => {
       if (!active()) return
 
@@ -1272,6 +1288,7 @@ export function createTimelineVirtualizer(input: Input) {
 
     if (active()) {
       input.setScrollRef(undefined)
+      input.reveal?.register(() => false)
       input.setRevealMessage?.(() => {})
       input.setScrollToEnd?.(() => {})
       input.setPage?.(() => {})
@@ -1288,7 +1305,7 @@ export function createTimelineVirtualizer(input: Input) {
         setToolOpen(key, open)
       },
     },
-    revealPart,
+    revealPart: revealOrSeekPart,
     View,
   }
 }
