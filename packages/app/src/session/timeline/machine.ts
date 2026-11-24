@@ -9,6 +9,10 @@ export const ZOOM_SLACK = 4
 // A scroll range at or below this does not overflow.
 export const MIN_OVERFLOW = 1
 
+// A reply that streams moves the end away while the reader's scroll is on its way there, so the scroll lands a line
+// or two short of it. A wheel or key toward the end that lands within this distance rejoins it.
+export const REJOIN_DISTANCE = 80
+
 /** A revealed tool call, whose top edge stays put until the reader scrolls. */
 export type FollowAnchor = { readonly key: string; readonly partID: string }
 
@@ -27,8 +31,16 @@ export type FollowState =
   | { readonly type: "following"; readonly gesture?: FollowGesture; readonly away?: number }
   /** Follows, with a scroll to the end queued for the next frame. */
   | { readonly type: "returning"; readonly attempt: number; readonly gesture?: FollowGesture }
-  /** Stays where the reader is. `endPending`: a scroll landed within the zoom slack of the end and may have reached it. */
-  | { readonly type: "detached"; readonly gesture?: FollowGesture; readonly endPending: boolean }
+  /**
+   * Stays where the reader is. `endPending`: a scroll landed within the zoom slack of the end and may have reached it.
+   * `downward`: the reader's last wheel or scroll key was toward the end, and nothing has navigated since.
+   */
+  | {
+      readonly type: "detached"
+      readonly gesture?: FollowGesture
+      readonly endPending: boolean
+      readonly downward?: true
+    }
   /** Holds a revealed tool call in place. */
   | { readonly type: "anchored"; readonly anchor: FollowAnchor }
 
@@ -80,6 +92,8 @@ const FOLLOWING: FollowState = Object.freeze({ type: "following" })
 
 const DETACHED: FollowState = Object.freeze({ type: "detached", endPending: false })
 
+const DETACHED_DOWNWARD: FollowState = Object.freeze({ type: "detached", endPending: false, downward: true })
+
 export const CONTACT_LOST_EVENT: FollowEvent = Object.freeze({ type: "contact.lost" })
 
 export function createFollowState(): FollowState {
@@ -110,12 +124,20 @@ export function transitionFollow(state: FollowState, event: FollowEvent): Follow
 
   if (state.type === "anchored") return releaseAnchor(state, event)
 
-  if (event.type === "detach") return state.type === "detached" ? state : detached(state.gesture, false)
+  // Navigation takes the view somewhere else, so the reader is no longer on the way to the end.
+  if (event.type === "detach")
+    return state.type === "detached" && !state.downward ? state : detached(state.gesture, false)
 
-  if (event.type === "release") return withGesture(state, contact(state.gesture))
+  if (event.type === "release")
+    return state.type === "detached" && state.downward
+      ? detached(contact(state.gesture), state.endPending)
+      : withGesture(state, contact(state.gesture))
 
-  if (event.type === "scroll.intent")
-    return event.upward && event.overflow && state.type !== "detached" ? detached(state.gesture, false) : state
+  if (event.type === "scroll.intent") {
+    if (state.type !== "detached") return event.upward && event.overflow ? detached(state.gesture, false) : state
+
+    return !state.downward === event.upward ? state : detached(state.gesture, state.endPending, !event.upward)
+  }
 
   if (event.type === "pointer.down") return touchHeld(state.gesture) ? state : withGesture(state, "pointer")
 
@@ -206,7 +228,9 @@ export function needsEndProbe(state: FollowState) {
 
 // Only the reader's own input lets an anchored tool go.
 function releaseAnchor(state: FollowState, event: FollowEvent): FollowState {
-  if (event.type === "release" || event.type === "scroll.intent") return DETACHED
+  if (event.type === "release") return DETACHED
+
+  if (event.type === "scroll.intent") return detached(undefined, false, !event.upward)
 
   if (event.type === "pointer.down") return detached("pointer", false)
 
@@ -247,11 +271,13 @@ function scrolled(state: Unanchored, event: Extract<FollowEvent, { type: "scroll
 
   if (fits || (movedDown && distance <= END_EPSILON)) return following(state.gesture)
 
+  if (state.downward && event.reader > END_EPSILON && distance <= REJOIN_DISTANCE) return following(state.gesture)
+
   // Probing the zoomed end now would cancel a scroll still in motion, so it waits for the scroll to settle.
   const endPending =
     movedDown && distance <= ZOOM_SLACK ? true : event.scrollTop < event.previousTop ? false : state.endPending
 
-  return endPending === state.endPending ? state : detached(state.gesture, endPending)
+  return endPending === state.endPending ? state : detached(state.gesture, endPending, state.downward)
 }
 
 function settled(state: Unanchored, atReachableEnd: boolean): FollowState {
@@ -262,7 +288,7 @@ function settled(state: Unanchored, atReachableEnd: boolean): FollowState {
 
   if (state.type !== "detached" || !state.endPending) return withGesture(state, gesture)
 
-  return atReachableEnd ? following(gesture) : detached(gesture, false)
+  return atReachableEnd ? following(gesture) : detached(gesture, false, state.downward)
 }
 
 function following(gesture: FollowGesture | undefined, away = 0): FollowState {
@@ -271,8 +297,10 @@ function following(gesture: FollowGesture | undefined, away = 0): FollowState {
   return gesture ? { type: "following", gesture } : FOLLOWING
 }
 
-function detached(gesture: FollowGesture | undefined, endPending: boolean): FollowState {
-  return gesture || endPending ? { type: "detached", gesture, endPending } : DETACHED
+function detached(gesture: FollowGesture | undefined, endPending: boolean, downward = false): FollowState {
+  if (!gesture && !endPending) return downward ? DETACHED_DOWNWARD : DETACHED
+
+  return downward ? { type: "detached", gesture, endPending, downward } : { type: "detached", gesture, endPending }
 }
 
 function withGesture(state: Unanchored, gesture: FollowGesture | undefined): FollowState {
@@ -280,7 +308,7 @@ function withGesture(state: Unanchored, gesture: FollowGesture | undefined): Fol
 
   if (state.type === "following") return following(gesture, state.away)
 
-  if (state.type === "detached") return detached(gesture, state.endPending)
+  if (state.type === "detached") return detached(gesture, state.endPending, state.downward)
 
   return { ...state, gesture }
 }
