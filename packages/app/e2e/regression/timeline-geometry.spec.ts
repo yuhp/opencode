@@ -301,10 +301,16 @@ test("keeps a file diff anchored while it expands and collapses", async ({ page 
   await expect.poll(bottom).toBeLessThanOrEqual(1)
   await expect.poll(() => trigger.evaluate((element) => element.getBoundingClientRect().y)).toBeGreaterThan(expandedY)
 
+  // The shorter content took the view to the end. The reader did not scroll there, so the header still stays put.
+  const collapsedY = await trigger.evaluate((element) => element.getBoundingClientRect().y)
   await trigger.click()
   await expect(diff).toBeVisible()
   await expect.poll(measured).toBeLessThanOrEqual(1)
-  await expect.poll(bottom).toBeLessThanOrEqual(1)
+  await expect
+    .poll(() =>
+      trigger.evaluate((element, initialY) => Math.abs(element.getBoundingClientRect().y - initialY), collapsedY),
+    )
+    .toBeLessThanOrEqual(5)
 })
 
 for (const outline of [

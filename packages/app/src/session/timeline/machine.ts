@@ -206,30 +206,30 @@ function releaseAnchor(state: FollowState, event: FollowEvent): FollowState {
   return state
 }
 
-// Following resumes by arriving at the end, either by scrolling there or by content shrinking under a viewport that
-// was already there. Merely resting near the end is not enough, otherwise a later scroll would overwrite an upward
-// intent expressed a pixel short of the bottom.
+// Following resumes by scrolling to the end, or once the content no longer overflows. Merely resting near the end is
+// not enough, otherwise a later scroll would overwrite an upward intent expressed a pixel short of the bottom. Nor is
+// a scroll range that shrinks to where the view is: the browser lowers the offset to the new end by itself, and a
+// reader who was sent somewhere else, such as to a linked message, did not go to the end.
 function scrolled(state: Unanchored, event: Extract<FollowEvent, { type: "scroll" }>): FollowState {
-  const arrived = event.scrollTop > event.previousTop + END_EPSILON || event.maxScroll < event.previousMaxScroll
+  const movedDown = event.scrollTop > event.previousTop + END_EPSILON
   const movedUp = event.scrollTop < event.previousTop - END_EPSILON
-
-  const atEnd =
-    (event.maxScroll <= MIN_OVERFLOW && event.previousMaxScroll > MIN_OVERFLOW) ||
-    (arrived && event.maxScroll - event.scrollTop <= END_EPSILON)
+  const fits = event.maxScroll <= MIN_OVERFLOW && event.previousMaxScroll > MIN_OVERFLOW
+  const distance = event.maxScroll - event.scrollTop
 
   // Upward input is the one intent geometry cannot recover: a held pointer or touch moving the view up is the
-  // reader's, while an upward shift without one is the virtualizer compensating a size change.
-  if (state.type !== "detached") return !atEnd && movedUp && state.gesture ? detached(state.gesture, false) : state
+  // reader's, while an upward shift without one is the virtualizer compensating a size change. A range that shrinks
+  // under a view at its end moves it up too, and leaves it at the end.
+  if (state.type !== "detached") {
+    const clamped = event.maxScroll < event.previousMaxScroll && distance <= END_EPSILON
 
-  if (atEnd) return following(state.gesture)
+    return movedUp && state.gesture && !fits && !clamped ? detached(state.gesture, false) : state
+  }
+
+  if (fits || (movedDown && distance <= END_EPSILON)) return following(state.gesture)
 
   // Probing the zoomed end now would cancel a scroll still in motion, so it waits for the scroll to settle.
   const endPending =
-    arrived && event.maxScroll - event.scrollTop <= ZOOM_SLACK && !(movedUp && state.gesture)
-      ? true
-      : event.scrollTop < event.previousTop
-        ? false
-        : state.endPending
+    movedDown && distance <= ZOOM_SLACK ? true : event.scrollTop < event.previousTop ? false : state.endPending
 
   return endPending === state.endPending ? state : detached(state.gesture, endPending)
 }

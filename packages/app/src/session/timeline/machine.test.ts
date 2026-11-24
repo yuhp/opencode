@@ -91,6 +91,18 @@ test.each<{ name: string; events: FollowEvent[]; following: boolean }>([
     following: true,
   },
   {
+    // A cold link to a message detached, then the rows' real sizes shortened the scroll range to where the view
+    // was. That counted as arriving at the end, so the link was dropped and the session opened on its latest message.
+    name: "stays detached when a shrinking scroll range clamps the view to its end",
+    events: [{ type: "detach" }, scroll(987, 1380, 987, 1380)],
+    following: false,
+  },
+  {
+    name: "stays detached when a shrinking scroll range clamps the view to its zoomed end",
+    events: [{ type: "detach" }, scroll(984, 1380, 987, 1380), { type: "scroll.settled", atReachableEnd: true }],
+    following: false,
+  },
+  {
     name: "resumes when the content shrinks to fit",
     events: [{ type: "detach" }, scroll(0, 300, 0, 300)],
     following: true,
