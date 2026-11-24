@@ -130,8 +130,12 @@ export function ContextGroup(props: {
     // Scroll before collapsing because the shorter content would clamp the scroll position first.
     const trigger = root?.querySelector(':scope > [data-component="collapsible"] > [data-slot="collapsible-trigger"]')
     const stuck = !open && root && trigger ? trigger.getBoundingClientRect().top - root.getBoundingClientRect().top : 0
+    const scroller = stuck > 0 && root ? scrollParent(root) : undefined
 
-    if (stuck > 0 && root) scrollParent(root)?.scrollBy({ top: -stuck, behavior: "instant" })
+    // At the scroller's end the header cannot be held: the shorter content takes the view to the new end either way,
+    // and a timeline that follows its end would take the scroll for the reader leaving it. 4px covers a zoomed end.
+    if (scroller && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop > 4)
+      scroller.scrollBy({ top: -stuck, behavior: "instant" })
     props.onOpenChange(open)
     props.onSizeChange?.()
   }

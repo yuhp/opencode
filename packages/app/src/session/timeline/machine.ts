@@ -20,8 +20,11 @@ export type FollowAnchor = { readonly key: string; readonly partID: string }
 export type FollowGesture = "pointer" | "touch" | "nested-touch" | "momentum"
 
 export type FollowState =
-  /** Holds the newest content at the bottom of the view. */
-  | { readonly type: "following"; readonly gesture?: FollowGesture }
+  /**
+   * Holds the newest content at the bottom of the view. `away`: how far the reader has scrolled up since the scroll
+   * last rested, while that is still too little to tell from the rounding of a zoomed scroll range.
+   */
+  | { readonly type: "following"; readonly gesture?: FollowGesture; readonly away?: number }
   /** Follows, with a scroll to the end queued for the next frame. */
   | { readonly type: "returning"; readonly attempt: number; readonly gesture?: FollowGesture }
   /** Stays where the reader is. `endPending`: a scroll landed within the zoom slack of the end and may have reached it. */
@@ -61,6 +64,12 @@ export type FollowEvent =
       readonly previousTop: number
       readonly maxScroll: number
       readonly previousMaxScroll: number
+      /**
+       * How far the reader moved the offset since the previous scroll, negative when up: the movement that neither
+       * the timeline's own scroll writes nor the browser's clamp to a shorter scroll range explain. It needs no
+       * wheel, key or pointer event, so it covers every way of scrolling.
+       */
+      readonly reader: number
     }
   /** The scroll came to rest. `atReachableEnd` is probed only when `needsEndProbe` asks for it. */
   | { readonly type: "scroll.settled"; readonly atReachableEnd: boolean }
@@ -222,7 +231,18 @@ function scrolled(state: Unanchored, event: Extract<FollowEvent, { type: "scroll
   if (state.type !== "detached") {
     const clamped = event.maxScroll < event.previousMaxScroll && distance <= END_EPSILON
 
-    return movedUp && state.gesture && !fits && !clamped ? detached(state.gesture, false) : state
+    if (movedUp && state.gesture && !fits && !clamped) return detached(state.gesture, false)
+
+    // A queued return is the reader's request to go to the end, which a scroll still in motion does not take back.
+    if (state.type === "returning") return state
+
+    // Every other way of scrolling up (autoscroll, a native shortcut, the scrollbar) shows only as movement the
+    // timeline did not make. It adds up across scrolls, because a reply that streams pins the view back between them.
+    const away = Math.max(0, (state.away ?? 0) - event.reader)
+
+    if (away > ZOOM_SLACK) return detached(state.gesture, false)
+
+    return away === (state.away ?? 0) ? state : following(state.gesture, away)
   }
 
   if (fits || (movedDown && distance <= END_EPSILON)) return following(state.gesture)
@@ -238,12 +258,16 @@ function settled(state: Unanchored, atReachableEnd: boolean): FollowState {
   if (touchHeld(state.gesture)) return state
   const gesture = contact(state.gesture)
 
+  if (state.type === "following" && state.away) return following(gesture)
+
   if (state.type !== "detached" || !state.endPending) return withGesture(state, gesture)
 
   return atReachableEnd ? following(gesture) : detached(gesture, false)
 }
 
-function following(gesture: FollowGesture | undefined): FollowState {
+function following(gesture: FollowGesture | undefined, away = 0): FollowState {
+  if (away) return { type: "following", gesture, away }
+
   return gesture ? { type: "following", gesture } : FOLLOWING
 }
 
@@ -254,7 +278,7 @@ function detached(gesture: FollowGesture | undefined, endPending: boolean): Foll
 function withGesture(state: Unanchored, gesture: FollowGesture | undefined): FollowState {
   if (state.gesture === gesture) return state
 
-  if (state.type === "following") return following(gesture)
+  if (state.type === "following") return following(gesture, state.away)
 
   if (state.type === "detached") return detached(gesture, state.endPending)
 

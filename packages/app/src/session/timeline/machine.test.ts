@@ -18,8 +18,14 @@ import {
 
 const replay = (events: FollowEvent[], from = createFollowState()) => events.reduce(transitionFollow, from)
 
-const scroll = (scrollTop: number, previousTop: number, maxScroll = 1000, previousMaxScroll = maxScroll) =>
-  ({ type: "scroll", scrollTop, previousTop, maxScroll, previousMaxScroll }) as const
+// The reader made the whole movement, unless `reader` says how much of it.
+const scroll = (
+  scrollTop: number,
+  previousTop: number,
+  maxScroll = 1000,
+  previousMaxScroll = maxScroll,
+  reader = scrollTop - previousTop,
+) => ({ type: "scroll", scrollTop, previousTop, maxScroll, previousMaxScroll, reader }) as const
 
 const anchor = { key: "assistant-part:tool", partID: "prt_tool" }
 
@@ -49,7 +55,36 @@ test.each<{ name: string; events: FollowEvent[]; following: boolean }>([
     // A pointer released outside the window, or after it lost focus, used to stay held, so the next upward
     // adjustment from the virtualizer stopped following.
     name: "keeps following after a pointer the window lost, then an automatic upward scroll",
-    events: [{ type: "pointer.down" }, { type: "pointer.up" }, scroll(480, 500, 500, 520)],
+    events: [{ type: "pointer.down" }, { type: "pointer.up" }, scroll(480, 500, 500, 520, 0)],
+    following: true,
+  },
+  {
+    // Ctrl+Home, PageUp on a control in a row, a scrollbar drag and toggled autoscroll scroll without any event the
+    // timeline handles, so it kept following and the next size change pulled the reader back to the end.
+    name: "detaches when the reader scrolls up by any means",
+    events: [scroll(480, 500)],
+    following: false,
+  },
+  {
+    // Autoscroll starts slowly, and a reply that streams pins the view back between its scrolls.
+    name: "adds up a slow upward scroll across the pins of a streaming reply",
+    events: [scroll(997, 1000), scroll(1027, 997, 1030, 1000, -3)],
+    following: false,
+  },
+  {
+    name: "keeps following through upward movement too small to tell from a zoomed range's rounding",
+    events: [scroll(997, 1000), { type: "scroll.settled", atReachableEnd: false }, scroll(997, 1000)],
+    following: true,
+  },
+  {
+    // The size compensation and the clamp to a shorter range move the offset up as well.
+    name: "keeps following when the timeline's own writes or a shorter range move the view up",
+    events: [scroll(700, 1000, 1000, 1000, 0), scroll(400, 700, 400, 1000, 0)],
+    following: true,
+  },
+  {
+    name: "keeps a queued return when a scroll still in motion moves up before its frame",
+    events: [{ type: "return.start", attempt: 1 }, scroll(480, 500), { type: "return.run", attempt: 1 }],
     following: true,
   },
   {
@@ -94,22 +129,22 @@ test.each<{ name: string; events: FollowEvent[]; following: boolean }>([
     // A cold link to a message detached, then the rows' real sizes shortened the scroll range to where the view
     // was. That counted as arriving at the end, so the link was dropped and the session opened on its latest message.
     name: "stays detached when a shrinking scroll range clamps the view to its end",
-    events: [{ type: "detach" }, scroll(987, 1380, 987, 1380)],
+    events: [{ type: "detach" }, scroll(987, 1380, 987, 1380, 0)],
     following: false,
   },
   {
     name: "stays detached when a shrinking scroll range clamps the view to its zoomed end",
-    events: [{ type: "detach" }, scroll(984, 1380, 987, 1380), { type: "scroll.settled", atReachableEnd: true }],
+    events: [{ type: "detach" }, scroll(984, 1380, 987, 1380, 0), { type: "scroll.settled", atReachableEnd: true }],
     following: false,
   },
   {
     name: "resumes when the content shrinks to fit",
-    events: [{ type: "detach" }, scroll(0, 300, 0, 300)],
+    events: [{ type: "detach" }, scroll(0, 300, 0, 300, 0)],
     following: true,
   },
   {
     name: "keeps a revealed tool when reaching it lands at the end",
-    events: [{ type: "anchor", anchor }, scroll(1000, 400)],
+    events: [{ type: "anchor", anchor }, scroll(1000, 400, 1000, 1000, 0)],
     following: false,
   },
   {

@@ -133,7 +133,11 @@ This section is the single source for what may move or restyle the session timel
 
 - The follow state (`src/session/timeline/machine.ts`) decides whether the timeline holds the newest content at the bottom. It stops when the reader scrolls up, and it resumes when the reader scrolls to the end.
 - A scroll range that shrinks moves the offset without the reader: the browser clamps the offset to the new end. That is not a return to the end. A cold link to a message detached the timeline, the rows' real sizes then shortened the range, and the clamp counted as an arrival: the session opened on its latest message and dropped the link's hash.
-- Keeper: "stays detached when a shrinking scroll range clamps the view to its end" in `src/session/timeline/machine.test.ts`.
+- The timeline learns that the reader scrolled from the scroll, not from the input device. `readScroll` in `src/session/timeline/virtualizer.tsx` counts each movement of the offset as the reader's, unless a scroll write of the timeline made it or the browser clamped it. Middle-click autoscroll, Ctrl+Home, PageUp on a control in a row and the scrollbar have no handler. Each one left the timeline following, and the next streamed line pulled the reader back to the end.
+- Put each scroll write that the timeline makes between `readScroll` and `syncScroll`. A write outside them counts as the reader's scroll: upward, it stops following.
+- Other code that scrolls the timeline up takes the reader off the end, as navigation must. Code that only holds a control in place while its row resizes must not scroll when the view is at its end. See `change` in `packages/session-ui/src/tools/tool-renderer.tsx`.
+- Keepers: "stays detached when a shrinking scroll range clamps the view to its end" in `src/session/timeline/machine.test.ts`; "keeps a reader who left the end with … in place while the reply streams" and "goes on following the reply after a group collapses from its stuck header" in `e2e/regression/timeline-stream.spec.ts`.
+- To check by hand: in a session that streams, leave the end with Ctrl+Home, the scrollbar, middle-click autoscroll, and PageUp after a click on a tool header. The timeline must stay where each one put it, and must follow again after End.
 
 ### `:has()` selectors
 
