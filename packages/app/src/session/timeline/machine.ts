@@ -26,9 +26,15 @@ export type FollowGesture = "pointer" | "touch" | "nested-touch" | "momentum"
 export type FollowState =
   /**
    * Holds the newest content at the bottom of the view. `away`: how far the reader has scrolled up since the scroll
-   * last rested, while that is still too little to tell from the rounding of a zoomed scroll range.
+   * last rested, while that is still too little to tell from the rounding of a zoomed scroll range. `gliding`: the
+   * view is on its way to the end in an animation, and nothing else may jump it there first.
    */
-  | { readonly type: "following"; readonly gesture?: FollowGesture; readonly away?: number }
+  | {
+      readonly type: "following"
+      readonly gesture?: FollowGesture
+      readonly away?: number
+      readonly gliding?: true
+    }
   /** Follows, with a scroll to the end queued for the next frame. */
   | { readonly type: "returning"; readonly attempt: number; readonly gesture?: FollowGesture }
   /**
@@ -51,6 +57,9 @@ export type FollowEvent =
   | { readonly type: "return.start"; readonly attempt: number }
   /** The queued frame runs; the scroll to the end goes ahead only if this attempt is still current. */
   | { readonly type: "return.run"; readonly attempt: number }
+  /** A view that follows starts to glide to the end, and arrives there. Input that stops following ends the glide. */
+  | { readonly type: "glide.start" }
+  | { readonly type: "glide.end" }
   /** Navigation or selection that must keep the view where it is, whether or not the content overflows yet. */
   | { readonly type: "detach" }
   | { readonly type: "anchor"; readonly anchor: FollowAnchor }
@@ -96,6 +105,10 @@ const DETACHED_DOWNWARD: FollowState = Object.freeze({ type: "detached", endPend
 
 export const CONTACT_LOST_EVENT: FollowEvent = Object.freeze({ type: "contact.lost" })
 
+export const GLIDE_START_EVENT: FollowEvent = Object.freeze({ type: "glide.start" })
+
+export const GLIDE_END_EVENT: FollowEvent = Object.freeze({ type: "glide.end" })
+
 export function createFollowState(): FollowState {
   return FOLLOWING
 }
@@ -123,6 +136,12 @@ export function transitionFollow(state: FollowState, event: FollowEvent): Follow
   }
 
   if (state.type === "anchored") return releaseAnchor(state, event)
+
+  if (event.type === "glide.start")
+    return state.type === "following" && !state.gliding ? following(state.gesture, state.away, true) : state
+
+  if (event.type === "glide.end")
+    return state.type === "following" && state.gliding ? following(state.gesture, state.away) : state
 
   // Navigation takes the view somewhere else, so the reader is no longer on the way to the end.
   if (event.type === "detach")
@@ -161,6 +180,11 @@ export function transitionFollow(state: FollowState, event: FollowEvent): Follow
 
 export function isFollowing(state: FollowState) {
   return state.type === "following" || state.type === "returning"
+}
+
+/** A glide to the end is under way. Until it arrives, the view is not pinned to the end. */
+export function isGliding(state: FollowState) {
+  return state.type === "following" && !!state.gliding
 }
 
 export function followAnchor(state: FollowState) {
@@ -266,7 +290,7 @@ function scrolled(state: Unanchored, event: Extract<FollowEvent, { type: "scroll
 
     if (away > ZOOM_SLACK) return detached(state.gesture, false)
 
-    return away === (state.away ?? 0) ? state : following(state.gesture, away)
+    return away === (state.away ?? 0) ? state : following(state.gesture, away, state.gliding)
   }
 
   if (fits || (movedDown && distance <= END_EPSILON)) return following(state.gesture)
@@ -284,14 +308,16 @@ function settled(state: Unanchored, atReachableEnd: boolean): FollowState {
   if (touchHeld(state.gesture)) return state
   const gesture = contact(state.gesture)
 
-  if (state.type === "following" && state.away) return following(gesture)
+  if (state.type === "following" && state.away) return following(gesture, 0, state.gliding)
 
   if (state.type !== "detached" || !state.endPending) return withGesture(state, gesture)
 
   return atReachableEnd ? following(gesture) : detached(gesture, false, state.downward)
 }
 
-function following(gesture: FollowGesture | undefined, away = 0): FollowState {
+function following(gesture: FollowGesture | undefined, away = 0, gliding = false): FollowState {
+  if (gliding) return { type: "following", gesture, away: away || undefined, gliding }
+
   if (away) return { type: "following", gesture, away }
 
   return gesture ? { type: "following", gesture } : FOLLOWING
@@ -306,7 +332,7 @@ function detached(gesture: FollowGesture | undefined, endPending: boolean, downw
 function withGesture(state: Unanchored, gesture: FollowGesture | undefined): FollowState {
   if (state.gesture === gesture) return state
 
-  if (state.type === "following") return following(gesture, state.away)
+  if (state.type === "following") return following(gesture, state.away, state.gliding)
 
   if (state.type === "detached") return detached(gesture, state.endPending, state.downward)
 
